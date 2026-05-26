@@ -53,8 +53,12 @@ public class TestMappingLoader {
         List<Path> unitTestFiles;
         try (Stream<Path> walk = Files.walk(testSourceRoot)) {
             unitTestFiles = walk
-                    .filter(p -> p.toString().endsWith("Test.java"))
-                    .filter(p -> !p.toString().contains("Steps")) //On exclu les steps
+                    .filter(p -> p.toString().endsWith(".java"))
+                    .filter(p -> {
+                        String name = p.getFileName().toString();
+                        return name.endsWith("Test.java") || name.startsWith("Test");
+                    })
+                    .filter(p -> !p.toString().contains("Steps"))
                     .collect(Collectors.toList());
         }
 
@@ -69,8 +73,8 @@ public class TestMappingLoader {
                 patterns.add(annMatcher.group(2));
             }
 
-            //Extraction des classes pour les UT
-            Set<String>classesProduction =extraireClassesProduction(content);
+            //Extraction des classes pour les UT (imports uniquement)
+            Set<String>classesProduction = extraireClassesImportees(content);
 
             for (Scenario scenario : scenarios) {
                 if (matchePattern(scenario, patterns)) {
@@ -78,7 +82,10 @@ public class TestMappingLoader {
 
                     for (Path utFile : unitTestFiles) {
                         String utName = stripExtension(utFile.getFileName().toString());
-                        String classeTestee = utName.replaceAll("Test$", "");
+                        // Supporte XxxTest (convention JUnit5) et TestXxx (convention JUnit4)
+                        String classeTestee = utName.endsWith("Test")
+                                ? utName.replaceAll("Test$", "")
+                                : utName.replaceAll("^Test", "");
                         if (classesProduction.contains(classeTestee)) {
                             scenario.addUnitTestId(utName);
                         }
@@ -91,22 +98,20 @@ public class TestMappingLoader {
     }
 
     //permet d'extraire les dépendances du test d'acceptance pour pouvoir faire la liaison AT -> UT
-    public  static Set<String> extraireClassesProduction(String source){
+    public static Set<String> extraireClassesProduction(String source){
         Set<String> classes = new HashSet<>();
 
         //Capture des classes des imports
         Matcher importMatcher = IMPORT_PATTERN.matcher(source);
         while (importMatcher.find()) {
             String fqcn = importMatcher.group(1);
-            //on saute les frameworks
             if (fqcn.contains(".test.") || fqcn.contains(".junit.")
                     || fqcn.contains(".cucumber.") || fqcn.startsWith("java.")
                     || fqcn.startsWith("javax.")) continue;
-            //filtrage des package pour récupérer uniquement le nom de la classe
             classes.add(fqcn.substring(fqcn.lastIndexOf('.') + 1));
         }
 
-        //capture des classes instanciées est appelées
+        //capture des classes instanciées et appelées (fallback si même package)
         Matcher usageMatcher = CLASS_USAGE.matcher(source);
         while (usageMatcher.find()) {
             String name = usageMatcher.group(1) != null
@@ -116,6 +121,21 @@ public class TestMappingLoader {
             }
         }
 
+        return classes;
+    }
+
+    // Détection uniquement par imports explicites (plus précise, évite la sur-sélection)
+    public static Set<String> extraireClassesImportees(String source){
+        Set<String> classes = new HashSet<>();
+        Matcher importMatcher = IMPORT_PATTERN.matcher(source);
+        while (importMatcher.find()) {
+            String fqcn = importMatcher.group(1);
+            if (fqcn.contains(".test.") || fqcn.contains(".junit.")
+                    || fqcn.contains(".cucumber.") || fqcn.startsWith("java.")
+                    || fqcn.startsWith("javax.") || fqcn.startsWith("org.")
+                    || fqcn.startsWith("static ")) continue;
+            classes.add(fqcn.substring(fqcn.lastIndexOf('.') + 1));
+        }
         return classes;
     }
 
